@@ -262,7 +262,11 @@ export const crawlSeed = async (seedUrl: string, outDir: string): Promise<Crawle
   await mkdir(outDir, { recursive: true });
 
   const browser = await chromium.launch();
-  const context = await browser.newContext();
+  const context = await browser.newContext({
+    userAgent:
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    locale: "de-DE",
+  });
   const page = await context.newPage();
   const results: CrawledPage[] = [];
   const standardPages: CrawledPage[] = [];
