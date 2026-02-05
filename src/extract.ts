@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 
-import { ALLOWED_SERVICES, isAllowedService } from "./services";
+import { ALLOWED_SERVICES, AllowedService, isAllowedService } from "./services";
 import {
   ProviderFrontmatter,
   ProviderFrontmatterSchema,
@@ -56,7 +56,7 @@ const parseJson = (payload: string): PartialProvider => {
   }
 };
 
-const inferServices = (text: string): string[] => {
+const inferServices = (text: string): AllowedService[] => {
   const lower = text.toLowerCase();
   const matches = SERVICE_KEYWORDS.filter((entry) =>
     entry.terms.some((term) => lower.includes(term)),

@@ -104,6 +104,7 @@ export const upsertProviderRow = async (provider: ProviderFrontmatter) => {
 
   const sheets = google.sheets({ version: "v4", auth });
   const lastColumn = columnToLetter(EXPECTED_HEADERS.length);
+  const headerValues = Array.from(EXPECTED_HEADERS);
 
   const headerRange = `${sheetTab}!A1:${lastColumn}1`;
   const headerResponse = await sheets.spreadsheets.values.get({
@@ -122,7 +123,7 @@ export const upsertProviderRow = async (provider: ProviderFrontmatter) => {
       range: headerRange,
       valueInputOption: "RAW",
       requestBody: {
-        values: [EXPECTED_HEADERS],
+        values: [headerValues],
       },
     });
   }

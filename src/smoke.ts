@@ -2,7 +2,7 @@ import { ProviderFrontmatterSchema, PROVIDER_SCHEMA_VERSION } from "./schema";
 import { ALLOWED_SERVICES } from "./services";
 
 const run = () => {
-  if (ALLOWED_SERVICES.length === 0) {
+  if (Number(ALLOWED_SERVICES.length) === 0) {
     throw new Error("ALLOWED_SERVICES is empty");
   }
 
