@@ -1,1 +1,17 @@
 # One provider URL per line
+https://www.secunet.com
+https://www.syss.de
+https://www.ernw.de
+https://www.codewhite.com
+https://www.nccgroup.com/de/
+https://www.sitsgroup.com
+https://www.tuv.com/it-security
+https://cure53.de
+https://www.alpha-strike.de
+https://rhebo.com
+https://www.digitronic.com
+https://intevation.de
+https://www.admeritia.com
+https://www.oneconsult.com
+https://www.ait.ac.at
+
