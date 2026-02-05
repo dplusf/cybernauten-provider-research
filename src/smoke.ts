@@ -20,6 +20,10 @@ const run = () => {
     delivery_modes: ["remote"],
     company_size_band: "2-10",
     response_time_band: "unknown",
+    founded_year: 2014,
+    differentiator: "Specialized in regulated SaaS incident response playbooks.",
+    notable_references: ["ACME Corp"],
+    proof_source_urls: ["https://example.com/case-studies/acme"],
     lead_contact: {
       type: "form",
       value: "https://example.com/contact",

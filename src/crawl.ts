@@ -2,7 +2,7 @@ import { mkdir, writeFile } from "fs/promises";
 import path from "path";
 import { chromium } from "playwright";
 
-import { getOrigin, normalizeSlug, normalizeText } from "./utils";
+import { dedupe, getOrigin, normalizeSlug, normalizeText } from "./utils";
 
 export type CrawledPage = {
   key: string;
@@ -15,13 +15,23 @@ export type CrawledPage = {
 
 const PAGE_GROUPS: Array<{ key: string; paths: string[] }> = [
   { key: "home", paths: ["/"] },
-  { key: "services", paths: ["/services", "/leistungen"] },
-  { key: "about", paths: ["/about", "/ueber-uns"] },
+  { key: "services", paths: ["/services", "/leistungen", "/solutions", "/angebot"] },
+  { key: "about", paths: ["/about", "/ueber-uns", "/about-us", "/unternehmen", "/company", "/profil", "/history"] },
+  {
+    key: "references",
+    paths: ["/referenzen", "/references", "/case-studies", "/case-study", "/success-stories"],
+  },
+  {
+    key: "certifications",
+    paths: ["/zertifizierungen", "/certifications", "/iso-27001", "/iso27001"],
+  },
+  { key: "partners", paths: ["/partner", "/partners", "/alliances"] },
   { key: "contact", paths: ["/contact", "/kontakt"] },
   { key: "impressum", paths: ["/impressum"] },
 ];
 
-const DISCOVERY_MAX_PAGES = 4;
+const DISCOVERY_MAX_PAGES = 12;
+const DISCOVERY_MAX_EXTERNAL_PAGES = 3;
 const MIN_TEXT_LENGTH = 600;
 const DISCOVERY_KEYWORDS = [
   "services",
@@ -30,8 +40,12 @@ const DISCOVERY_KEYWORDS = [
   "angebot",
   "about",
   "ueber-uns",
+  "about-us",
   "unternehmen",
   "company",
+  "profile",
+  "history",
+  "who-we-are",
   "team",
   "kontakt",
   "contact",
@@ -41,7 +55,37 @@ const DISCOVERY_KEYWORDS = [
   "legal",
   "case-study",
   "case-studies",
+  "success",
+  "stories",
+  "references",
+  "referenzen",
+  "kunden",
+  "clients",
+  "certification",
+  "certifications",
+  "zertifizierung",
+  "iso",
+  "27001",
+  "partner",
+  "partners",
+  "alliance",
+  "industry",
+  "branchen",
+  "public-sector",
+  "government",
+  "critical-infrastructure",
+  "kritische-infrastruktur",
 ];
+
+const TRUSTED_EXTERNAL_HOSTS = [
+  "wikipedia.org",
+  "heise.de",
+  "golem.de",
+  "handelsblatt.com",
+  "spiegel.de",
+];
+
+const TLD_PARTS = new Set(["com", "net", "org", "io", "de", "eu", "co"]);
 
 const BLOCKED_EXTENSIONS = [
   ".jpg",
@@ -75,6 +119,7 @@ type DiscoveryCandidate = {
   sourceUrl: string;
   score: number;
   depth: number;
+  isExternal: boolean;
 };
 
 const extractVisibleText = async (page: { evaluate: <T>(fn: () => T) => Promise<T> }) =>
@@ -155,16 +200,26 @@ const extractVisibleLinks = async (page: { evaluate: <T>(fn: () => T) => Promise
     return links;
   });
 
-const normalizeCandidateUrl = (href: string, origin: string): string | null => {
+const isTrustedExternalHost = (hostname: string): boolean => {
+  return TRUSTED_EXTERNAL_HOSTS.some(
+    (host) => hostname === host || hostname.endsWith(`.${host}`),
+  );
+};
+
+const normalizeCandidateUrl = (
+  href: string,
+  origin: string,
+): { url: string; isExternal: boolean } | null => {
   try {
     if (href.startsWith("mailto:") || href.startsWith("tel:")) {
       return null;
     }
     const url = new URL(href, origin);
-    if (url.origin !== origin) {
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
       return null;
     }
-    if (url.protocol !== "http:" && url.protocol !== "https:") {
+    const isExternal = url.origin !== origin;
+    if (isExternal && !isTrustedExternalHost(url.hostname)) {
       return null;
     }
     url.hash = "";
@@ -174,7 +229,7 @@ const normalizeCandidateUrl = (href: string, origin: string): string | null => {
       return null;
     }
     url.pathname = normalizedPath;
-    return url.toString();
+    return { url: url.toString(), isExternal };
   } catch {
     return null;
   }
@@ -196,8 +251,138 @@ const scoreCandidate = (url: string, text: string, reason: string): { score: num
   if (lowerText.includes(reason)) {
     score += 2;
   }
+  if (
+    lowerUrl.includes("case-studies") ||
+    lowerUrl.includes("case-study") ||
+    lowerUrl.includes("references") ||
+    lowerUrl.includes("referenzen") ||
+    lowerUrl.includes("certifications") ||
+    lowerUrl.includes("zertifizierungen") ||
+    lowerUrl.includes("partners") ||
+    lowerUrl.includes("partner")
+  ) {
+    score += 3;
+  }
+  if (depth > 4) {
+    score -= 2;
+  }
   score += Math.max(0, 3 - depth);
   return { score, depth };
+};
+
+const inferCompanyName = (seedUrl: string): string => {
+  const hostname = new URL(seedUrl).hostname.replace(/^www\./, "");
+  const parts = hostname.split(".");
+  while (parts.length > 1 && TLD_PARTS.has(parts[parts.length - 1])) {
+    parts.pop();
+  }
+  const core = parts.join(" ").replace(/-/g, " ").trim();
+  return core;
+};
+
+const toTitleCase = (value: string): string =>
+  value.replace(/\b\w/g, (match) => match.toUpperCase());
+
+const buildWikipediaUrls = (name: string): string[] => {
+  if (!name) {
+    return [];
+  }
+  const variants = new Set([name, toTitleCase(name)]);
+  const urls: string[] = [];
+  for (const variant of variants) {
+    const slug = encodeURIComponent(variant.trim().replace(/\s+/g, "_"));
+    urls.push(`https://de.wikipedia.org/wiki/${slug}`);
+    urls.push(`https://en.wikipedia.org/wiki/${slug}`);
+  }
+  return urls;
+};
+
+const fetchSerperResults = async (query: string): Promise<string[]> => {
+  const apiKey = process.env.SERPER_API_KEY;
+  if (!apiKey) {
+    return [];
+  }
+
+  try {
+    const response = await fetch("https://google.serper.dev/search", {
+      method: "POST",
+      headers: {
+        "X-API-KEY": apiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        q: query,
+        gl: "de",
+        hl: "de",
+        autocorrect: true,
+        page: 1,
+      }),
+    });
+
+    if (!response.ok) {
+      return [];
+    }
+
+    const data = (await response.json()) as {
+      knowledgeGraph?: { descriptionLink?: string };
+      organic?: Array<{ link?: string }>;
+    };
+
+    const results: string[] = [];
+    if (data.knowledgeGraph?.descriptionLink) {
+      results.push(data.knowledgeGraph.descriptionLink);
+    }
+    if (Array.isArray(data.organic)) {
+      for (const entry of data.organic) {
+        if (entry.link) {
+          results.push(entry.link);
+        }
+      }
+    }
+    return results;
+  } catch {
+    return [];
+  }
+};
+
+const collectExternalCandidates = async (
+  seedUrl: string,
+  origin: string,
+): Promise<DiscoveryCandidate[]> => {
+  const name = inferCompanyName(seedUrl);
+  if (!name) {
+    return [];
+  }
+  const wikiUrls = buildWikipediaUrls(name);
+  const searchQueries = [
+    `${name} IT security`,
+    `${name} cybersecurity`,
+    `${name} information security`,
+  ].filter((query) => query.trim().length > 0);
+
+  const searchResults = (await Promise.all(searchQueries.map(fetchSerperResults))).flat();
+  const combined = dedupe([...
+    wikiUrls,
+    ...searchResults,
+  ]);
+
+  const candidates: DiscoveryCandidate[] = [];
+  for (const url of combined) {
+    const normalized = normalizeCandidateUrl(url, origin);
+    if (!normalized || !normalized.isExternal) {
+      continue;
+    }
+    candidates.push({
+      url: normalized.url,
+      reason: "external-proof",
+      sourceUrl: seedUrl,
+      score: 10,
+      depth: 1,
+      isExternal: true,
+    });
+  }
+
+  return candidates;
 };
 
 const collectDiscoveryCandidates = (
@@ -211,17 +396,18 @@ const collectDiscoveryCandidates = (
     if (!normalized) {
       continue;
     }
-    const reason = findDiscoveryReason(`${normalized} ${link.text}`);
+    const reason = findDiscoveryReason(`${normalized.url} ${link.text}`);
     if (!reason) {
       continue;
     }
-    const { score, depth } = scoreCandidate(normalized, link.text, reason);
+    const { score, depth } = scoreCandidate(normalized.url, link.text, reason);
     candidates.push({
-      url: normalized,
+      url: normalized.url,
       reason,
       sourceUrl,
       score,
       depth,
+      isExternal: normalized.isExternal,
     });
   }
   return candidates;
@@ -231,6 +417,7 @@ const selectDiscoveryTargets = (
   candidates: DiscoveryCandidate[],
   visitedUrls: Set<string>,
   maxTargets: number,
+  maxExternalTargets: number,
 ): DiscoveryCandidate[] => {
   const unique = new Map<string, DiscoveryCandidate>();
   for (const candidate of candidates) {
@@ -243,7 +430,7 @@ const selectDiscoveryTargets = (
     }
   }
 
-  return Array.from(unique.values())
+  const sorted = Array.from(unique.values())
     .sort((a, b) => {
       if (b.score !== a.score) {
         return b.score - a.score;
@@ -252,8 +439,24 @@ const selectDiscoveryTargets = (
         return a.depth - b.depth;
       }
       return a.url.localeCompare(b.url);
-    })
-    .slice(0, maxTargets);
+    });
+
+  const selected: DiscoveryCandidate[] = [];
+  let externalCount = 0;
+  for (const candidate of sorted) {
+    if (selected.length >= maxTargets) {
+      break;
+    }
+    if (candidate.isExternal) {
+      if (externalCount >= maxExternalTargets) {
+        continue;
+      }
+      externalCount += 1;
+    }
+    selected.push(candidate);
+  }
+
+  return selected;
 };
 
 export const crawlSeed = async (seedUrl: string, outDir: string): Promise<CrawledPage[]> => {
@@ -336,10 +539,16 @@ export const crawlSeed = async (seedUrl: string, outDir: string): Promise<Crawle
     }
   }
 
+  const externalCandidates = await collectExternalCandidates(seedUrl, origin);
+  if (externalCandidates.length > 0) {
+    discoveryCandidates.push(...externalCandidates);
+  }
+
   const discoveryTargets = selectDiscoveryTargets(
     discoveryCandidates,
     visitedUrls,
     DISCOVERY_MAX_PAGES,
+    DISCOVERY_MAX_EXTERNAL_PAGES,
   );
   if (discoveryTargets.length > 0) {
     console.log(
@@ -369,7 +578,7 @@ export const crawlSeed = async (seedUrl: string, outDir: string): Promise<Crawle
         status,
         text,
         sourceUrl: target.sourceUrl,
-        discoveryReason: target.reason,
+        discoveryReason: target.isExternal ? "external-proof" : target.reason,
       };
       results.push(record);
       const filename = path.join(outDir, `${slug}-${key}.json`);

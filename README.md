@@ -24,6 +24,7 @@ npx playwright install chromium
 - `OPENAI_API_KEY`: API key for OpenAI-compatible LLM
 - `OPENAI_MODEL`: model name (default `gpt-4o-mini`)
 - `OPENAI_BASE_URL`: optional base URL for compatible providers
+- `SERPER_API_KEY`: optional key for Serper search (external proof sources)
 
 4. Add provider URLs to `seeds/providers.txt` (one URL per line).
 
@@ -46,7 +47,8 @@ yarn run smoke
 
 ## Flow
 
-1. Crawls a fixed set of pages per seed (`/`, `/services` or `/leistungen`, `/about` or `/ueber-uns`, `/contact` or `/kontakt`, `/impressum`).
+1. Crawls a fixed set of pages per seed (home, services, about, references, certifications, partners, contact, impressum) and discovers up to 12 additional internal pages by keyword.
+2. Optionally fetches up to 3 trusted external sources (Wikipedia and whitelisted news) for proof/facts.
 2. Extracts visible text only and stores raw text in `out/raw/`.
 3. Sends text to the LLM for structured extraction.
 4. Validates output against `ProviderFrontmatterSchema`.
@@ -54,5 +56,7 @@ yarn run smoke
 
 ## Notes
 
-- This tool prefers deterministic, explainable output. It does not discover new URLs.
-- If confidence is low, it still writes the row with `data_origin=researched`, `evidence_level=basic`, and a `notes` entry.
+- This tool prefers deterministic, explainable output. It discovers internal pages by keyword and can fetch trusted external proof sources.
+- If quality gates fail (vague description or insufficient security relevance), the row is still written but marked `publish_status=hidden`.
+- Quality signals are captured via `founded_year`, `notable_references`, and `proof_source_urls` when present in sources.
+- Trusted external sources (e.g. Wikipedia) are used only for proof/facts, not descriptions.

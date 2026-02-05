@@ -6,6 +6,7 @@ import { joinComma, toBooleanString } from "./utils";
 export const EXPECTED_HEADERS = [
   "schema_version",
   "name",
+  "legal_name",
   "slug",
   "website",
   "regions",
@@ -20,6 +21,10 @@ export const EXPECTED_HEADERS = [
   "lead_contact_value",
   "lead_contact_notes",
   "notes",
+  "founded_year",
+  "differentiator",
+  "notable_references",
+  "proof_source_urls",
   "industries",
   "certifications",
   "case_studies",
@@ -30,6 +35,7 @@ export const EXPECTED_HEADERS = [
   "is_fictional",
   "data_origin",
   "evidence_level",
+  "publish_status",
 ] as const;
 
 const getServiceAccountCredentials = () => {
@@ -59,6 +65,7 @@ const providerToRow = (provider: ProviderFrontmatter): string[] => {
   const map: Record<string, string> = {
     schema_version: provider.schema_version.toString(),
     name: provider.name,
+    legal_name: provider.legal_name ?? "",
     slug: provider.slug,
     website: provider.website,
     regions: joinComma(provider.regions),
@@ -73,6 +80,10 @@ const providerToRow = (provider: ProviderFrontmatter): string[] => {
     lead_contact_value: provider.lead_contact.value,
     lead_contact_notes: provider.lead_contact.notes ?? "",
     notes: provider.notes ?? "",
+    founded_year: provider.founded_year ? provider.founded_year.toString() : "",
+    differentiator: provider.differentiator ?? "",
+    notable_references: joinComma(provider.notable_references),
+    proof_source_urls: joinComma(provider.proof_source_urls),
     industries: joinComma(provider.industries),
     certifications: joinComma(provider.certifications),
     case_studies: joinComma(provider.case_studies),
@@ -83,6 +94,7 @@ const providerToRow = (provider: ProviderFrontmatter): string[] => {
     is_fictional: toBooleanString(provider.is_fictional),
     data_origin: provider.data_origin ?? "seed",
     evidence_level: provider.evidence_level ?? "none",
+    publish_status: provider.publish_status ?? "published",
   };
 
   return EXPECTED_HEADERS.map((header) => map[header] ?? "");
