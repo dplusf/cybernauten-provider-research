@@ -47,7 +47,7 @@ yarn run smoke
 
 ## Flow
 
-1. Crawls a fixed set of pages per seed (home, services, about, references, certifications, partners, contact, impressum) and discovers up to 12 additional internal pages by keyword.
+1. Crawls the homepage, extracts internal links, uses sitemap.xml (if present), and falls back to common paths when the homepage cannot be fetched.
 2. Optionally fetches up to 3 trusted external sources (Wikipedia and whitelisted news) for proof/facts.
 2. Extracts visible text only and stores raw text in `out/raw/`.
 3. Sends text to the LLM for structured extraction.
