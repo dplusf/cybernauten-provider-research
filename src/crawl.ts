@@ -13,26 +13,32 @@ export type CrawledPage = {
   discoveryReason?: string;
 };
 
-const PAGE_GROUPS: Array<{ key: string; paths: string[] }> = [
-  { key: "home", paths: ["/"] },
-  { key: "services", paths: ["/services", "/leistungen", "/solutions", "/angebot"] },
-  { key: "about", paths: ["/about", "/ueber-uns", "/about-us", "/unternehmen", "/company", "/profil", "/history"] },
-  {
-    key: "references",
-    paths: ["/referenzen", "/references", "/case-studies", "/case-study", "/success-stories"],
-  },
-  {
-    key: "certifications",
-    paths: ["/zertifizierungen", "/certifications", "/iso-27001", "/iso27001"],
-  },
-  { key: "partners", paths: ["/partner", "/partners", "/alliances"] },
-  { key: "contact", paths: ["/contact", "/kontakt"] },
-  { key: "impressum", paths: ["/impressum"] },
-];
-
 const DISCOVERY_MAX_PAGES = 12;
 const DISCOVERY_MAX_EXTERNAL_PAGES = 3;
 const MIN_TEXT_LENGTH = 600;
+const IMPRESSUM_PATHS = [
+  "/impressum",
+  "/imprint",
+  "/legal",
+  "/legal-notice",
+  "/legalnotice",
+  "/legal-info",
+  "/legal-information",
+  "/mentions-legales",
+  "/mentions-legales.html",
+];
+const IMPRESSUM_KEYWORDS = [
+  "impressum",
+  "imprint",
+  "legal",
+  "legal notice",
+  "legal-notice",
+  "legalnotice",
+  "legal info",
+  "legal-information",
+  "mentions legales",
+  "mentions-legales",
+];
 const DISCOVERY_KEYWORDS = [
   "services",
   "service",
@@ -240,6 +246,29 @@ const findDiscoveryReason = (value: string): string | undefined => {
   return DISCOVERY_KEYWORDS.find((keyword) => lower.includes(keyword));
 };
 
+const isImpressumMatch = (value: string): boolean => {
+  const lower = value.toLowerCase();
+  return IMPRESSUM_KEYWORDS.some((keyword) => lower.includes(keyword));
+};
+
+const findImpressumCandidateFromLinks = (
+  links: DiscoveryLink[],
+  origin: string,
+): string | null => {
+  for (const link of links) {
+    const combined = `${link.href} ${link.text}`;
+    if (!isImpressumMatch(combined)) {
+      continue;
+    }
+    const normalized = normalizeCandidateUrl(link.href, origin);
+    if (!normalized || normalized.isExternal) {
+      continue;
+    }
+    return normalized.url;
+  }
+  return null;
+};
+
 const scoreCandidate = (url: string, text: string, reason: string): { score: number; depth: number } => {
   const lowerUrl = url.toLowerCase();
   const lowerText = text.toLowerCase();
@@ -268,6 +297,103 @@ const scoreCandidate = (url: string, text: string, reason: string): { score: num
   }
   score += Math.max(0, 3 - depth);
   return { score, depth };
+};
+
+const extractSitemapUrls = (xml: string): string[] => {
+  const urls: string[] = [];
+  const matches = xml.matchAll(/<loc>([^<]+)<\/loc>/gi);
+  for (const match of matches) {
+    if (match[1]) {
+      urls.push(match[1].trim());
+    }
+  }
+  return urls;
+};
+
+const fetchSitemapUrlsFrom = async (url: string): Promise<string[]> => {
+  try {
+    const response = await fetch(url, { method: "GET" });
+    if (!response.ok) {
+      return [];
+    }
+    const text = await response.text();
+    if (!text.includes("<loc>")) {
+      return [];
+    }
+    return extractSitemapUrls(text);
+  } catch {
+    return [];
+  }
+};
+
+const collectSitemapCandidates = async (
+  origin: string,
+  sourceUrl: string,
+): Promise<DiscoveryCandidate[]> => {
+  const sitemapUrl = `${origin}/sitemap.xml`;
+  const rootUrls = await fetchSitemapUrlsFrom(sitemapUrl);
+  if (rootUrls.length === 0) {
+    return [];
+  }
+
+  const nestedSitemaps = rootUrls.filter((entry) => entry.endsWith(".xml") || entry.includes("sitemap"));
+  const sitemapUrls = nestedSitemaps.length > 0 && nestedSitemaps.length <= 15
+    ? (await Promise.all(nestedSitemaps.map(fetchSitemapUrlsFrom))).flat()
+    : rootUrls;
+
+  const candidates: DiscoveryCandidate[] = [];
+  for (const entry of dedupe(sitemapUrls)) {
+    const normalized = normalizeCandidateUrl(entry, origin);
+    if (!normalized || normalized.isExternal) {
+      continue;
+    }
+    const reason = findDiscoveryReason(normalized.url) ?? "sitemap";
+    const { score, depth } = scoreCandidate(normalized.url, "", reason);
+    candidates.push({
+      url: normalized.url,
+      reason,
+      sourceUrl,
+      score,
+      depth,
+      isExternal: false,
+    });
+  }
+
+  return candidates;
+};
+
+const collectSitemapUrls = async (origin: string): Promise<string[]> => {
+  const sitemapUrl = `${origin}/sitemap.xml`;
+  const rootUrls = await fetchSitemapUrlsFrom(sitemapUrl);
+  if (rootUrls.length === 0) {
+    return [];
+  }
+
+  const nestedSitemaps = rootUrls.filter((entry) => entry.endsWith(".xml") || entry.includes("sitemap"));
+  const sitemapUrls = nestedSitemaps.length > 0 && nestedSitemaps.length <= 15
+    ? (await Promise.all(nestedSitemaps.map(fetchSitemapUrlsFrom))).flat()
+    : rootUrls;
+
+  const urls: string[] = [];
+  for (const entry of dedupe(sitemapUrls)) {
+    const normalized = normalizeCandidateUrl(entry, origin);
+    if (!normalized || normalized.isExternal) {
+      continue;
+    }
+    urls.push(normalized.url);
+  }
+
+  return dedupe(urls);
+};
+
+const findImpressumCandidateFromSitemap = async (origin: string): Promise<string | null> => {
+  const urls = await collectSitemapUrls(origin);
+  for (const url of urls) {
+    if (isImpressumMatch(url)) {
+      return url;
+    }
+  }
+  return null;
 };
 
 const inferCompanyName = (seedUrl: string): string => {
@@ -471,72 +597,172 @@ export const crawlSeed = async (seedUrl: string, outDir: string): Promise<Crawle
     locale: "de-DE",
   });
   const page = await context.newPage();
+  await page.addInitScript(() => {
+    (window as unknown as { __name?: (target: unknown) => unknown }).__name =
+      (target: unknown) => target;
+  });
   const results: CrawledPage[] = [];
-  const standardPages: CrawledPage[] = [];
   const discoveryCandidates: DiscoveryCandidate[] = [];
   const visitedUrls = new Set<string>();
 
-  for (const group of PAGE_GROUPS) {
-    let captured = false;
-    for (const candidatePath of group.paths) {
-      const targetUrl = new URL(candidatePath, seedUrl).toString();
-      visitedUrls.add(targetUrl);
-      try {
-        const response = await page.goto(targetUrl, {
-          waitUntil: "domcontentloaded",
-          timeout: 30000,
-        });
-        const status = response?.status() ?? 0;
-        if (status >= 400) {
-          continue;
-        }
+  const upsertResult = (record: CrawledPage) => {
+    const index = results.findIndex((entry) => entry.key === record.key);
+    if (index >= 0) {
+      results[index] = record;
+      return;
+    }
+    results.push(record);
+  };
 
-        const rawText = await extractVisibleText(page);
-        const text = normalizeText(rawText);
-        const record: CrawledPage = {
-          key: group.key,
-          url: targetUrl,
-          status,
-          text,
-        };
-        results.push(record);
-        standardPages.push(record);
-        const filename = path.join(outDir, `${slug}-${group.key}.json`);
-        await writeFile(filename, JSON.stringify(record, null, 2), "utf8");
-        const links = await extractVisibleLinks(page);
-        const candidates = collectDiscoveryCandidates(links, origin, targetUrl);
-        discoveryCandidates.push(...candidates);
-        captured = true;
-        break;
-      } catch (error) {
-        if (candidatePath === group.paths[group.paths.length - 1]) {
-          captured = true;
-        }
-        continue;
+  const capturePage = async (
+    key: string,
+    targetUrl: string,
+    waitUntil: "domcontentloaded" | "networkidle",
+  ) => {
+    const response = await page.goto(targetUrl, {
+      waitUntil,
+      timeout: 30000,
+    });
+    const status = response?.status() ?? 0;
+    if (status >= 400) {
+      console.warn(`Crawl failed (${status}) for ${targetUrl}`);
+      return null;
+    }
+
+    const rawText = await extractVisibleText(page);
+    const text = normalizeText(rawText);
+    const record: CrawledPage = {
+      key,
+      url: targetUrl,
+      status,
+      text,
+    };
+    upsertResult(record);
+    const filename = path.join(outDir, `${slug}-${key}.json`);
+    await writeFile(filename, JSON.stringify(record, null, 2), "utf8");
+    const links = await extractVisibleLinks(page);
+    return { record, links };
+  };
+
+  visitedUrls.add(seedUrl);
+  let homeLinks: DiscoveryLink[] = [];
+  let homeTextLength = 0;
+  try {
+    const homeResult = await capturePage("home", seedUrl, "domcontentloaded");
+    if (homeResult) {
+      homeLinks = homeResult.links;
+      homeTextLength = homeResult.record.text.length;
+    }
+    if (homeTextLength < MIN_TEXT_LENGTH) {
+      const retryResult = await capturePage("home", seedUrl, "networkidle");
+      if (retryResult) {
+        homeLinks = retryResult.links;
+        homeTextLength = retryResult.record.text.length;
       }
     }
-    if (!captured) {
-      continue;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`Homepage crawl failed for ${slug}: ${message}`);
+  }
+
+  if (homeLinks.length > 0) {
+    discoveryCandidates.push(...collectDiscoveryCandidates(homeLinks, origin, seedUrl));
+  }
+
+  const captureImpressum = async (targetUrl: string) => {
+    if (visitedUrls.has(targetUrl)) {
+      return null;
+    }
+    const result = await capturePage("impressum", targetUrl, "domcontentloaded");
+    if (!result) {
+      return null;
+    }
+    visitedUrls.add(targetUrl);
+    if (result.links.length > 0) {
+      discoveryCandidates.push(...collectDiscoveryCandidates(result.links, origin, targetUrl));
+    }
+    return result;
+  };
+
+  let impressumCaptured = false;
+  const impressumFromLinks =
+    homeLinks.length > 0 ? findImpressumCandidateFromLinks(homeLinks, origin) : null;
+  if (impressumFromLinks) {
+    try {
+      if (await captureImpressum(impressumFromLinks)) {
+        impressumCaptured = true;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`Impressum crawl failed for ${impressumFromLinks}: ${message}`);
     }
   }
 
-  const needsSpaFallback =
-    standardPages.length === 0 || standardPages.every((page) => page.text.length < MIN_TEXT_LENGTH);
-  if (needsSpaFallback) {
-    try {
-      const response = await page.goto(seedUrl, {
-        waitUntil: "networkidle",
-        timeout: 30000,
-      });
-      const status = response?.status() ?? 0;
-      if (status < 400) {
-        const fallbackLinks = await extractVisibleLinks(page);
-        const fallbackCandidates = collectDiscoveryCandidates(fallbackLinks, origin, seedUrl);
-        discoveryCandidates.push(...fallbackCandidates);
+  if (homeLinks.length === 0) {
+    const fallbackPaths = [
+      "/",
+      "/about",
+      "/ueber-uns",
+      "/services",
+      "/leistungen",
+      "/contact",
+      "/kontakt",
+    ];
+    let fallbackIndex = 0;
+    for (const pathEntry of fallbackPaths) {
+      const targetUrl = new URL(pathEntry, seedUrl).toString();
+      if (visitedUrls.has(targetUrl)) {
+        continue;
       }
-    } catch (error) {
-      console.warn(`SPA fallback failed for ${slug}.`);
+      visitedUrls.add(targetUrl);
+      fallbackIndex += 1;
+      try {
+        const result = await capturePage(`fallback-${fallbackIndex}`, targetUrl, "domcontentloaded");
+        if (result?.links.length) {
+          discoveryCandidates.push(...collectDiscoveryCandidates(result.links, origin, targetUrl));
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`Fallback crawl failed for ${targetUrl}: ${message}`);
+      }
     }
+  }
+
+  if (!impressumCaptured) {
+    const impressumFromSitemap = await findImpressumCandidateFromSitemap(origin);
+    if (impressumFromSitemap) {
+      try {
+        if (await captureImpressum(impressumFromSitemap)) {
+          impressumCaptured = true;
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`Impressum crawl failed for ${impressumFromSitemap}: ${message}`);
+      }
+    }
+  }
+
+  if (!impressumCaptured) {
+    for (const pathEntry of IMPRESSUM_PATHS) {
+      const targetUrl = new URL(pathEntry, origin).toString();
+      try {
+        if (await captureImpressum(targetUrl)) {
+          impressumCaptured = true;
+          break;
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`Impressum crawl failed for ${targetUrl}: ${message}`);
+      }
+    }
+  }
+  if (!impressumCaptured) {
+    console.warn(`No impressum page found for ${slug}.`);
+  }
+
+  const sitemapCandidates = await collectSitemapCandidates(origin, seedUrl);
+  if (sitemapCandidates.length > 0) {
+    discoveryCandidates.push(...sitemapCandidates);
   }
 
   const externalCandidates = await collectExternalCandidates(seedUrl, origin);

@@ -1,25 +1,31 @@
 # Cybernauten — todo.md
 
 ## Current Focus
-- Stabilize the core pipeline (crawl → extract → validate → write) so it runs reliably end-to-end.
-  Why critical: this is the foundation for all data output and must be predictable.
-- Keep runtime and compute cost low per provider.
-  Why critical: costs and performance determine whether this can scale.
+- Define authoritative sources for providers beyond the seed list.
+- Track formal qualifications for providers (non-service signals).
 
 ## Active Tasks
-- Run the pipeline on a small seed set and confirm it completes without crashes.
-- Verify Playwright extraction returns meaningful text for core pages.
-- Reduce validation fallbacks by adjusting prompts or normalization if needed.
+- Add BSI APT-Response source mapping file at `seeds/bsi-apt-response.txt`.
+- Import providers from the BSI APT-Response PDF and merge into `seeds/providers.txt` (dedupe by slug).
+- Add `qualifications` field to schema and sheet output.
+- Enrich providers in BSI list with qualification label and proof URL.
+- Document source maintenance cadence (how often the BSI list is re-checked).
 
-## Parked / Later
-- None yet — TBD once core pipeline is stable.
+## Source Definitions
+- Seed list: `seeds/providers.txt` (manual curation).
+- BSI: Qualified APT-Response Service Providers list (PDF)
+  https://www.bsi.bund.de/SharedDocs/Downloads/DE/BSI/Cyber-Sicherheit/Themen/Dienstleister_APT-Response-Liste.pdf?__blob=publicationFile&v=42
 
-## NOT NOW (Important)
+## Qualification Labels
+- BSI Qualified APT Response
+
+## Validation
+- Dry-run 1-2 providers from the BSI list and verify:
+  - `qualifications` is set
+  - `proof_source_urls` includes the BSI PDF link
+  - No service list changes are required
+
+## NOT NOW
 - New UI/dashboard work.
-- Automated discovery of new providers.
-- Additional data enrichment layers or external integrations.
-
-## Done Criteria
-- 3–5 real providers run end-to-end with zero manual fixes.
-- Runtime and compute cost thresholds defined and met (TBD).
-- Rows written to Sheets are valid and consistent across runs.
+- Automated discovery beyond approved source lists.
+- Additional enrichment that cannot be sourced explicitly.

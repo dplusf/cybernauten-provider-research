@@ -78,6 +78,7 @@ export const ProviderFrontmatterSchema = z
     proof_source_urls: z.array(z.string().url()).max(3).optional(),
     industries: z.array(z.string().max(40)).max(8).optional(),
     certifications: z.array(z.string().max(60)).max(15).optional(),
+    qualifications: z.array(z.string().max(60)).max(5).optional(),
     case_studies: z.array(z.string().url()).max(3).optional(),
     engagement_models: z.array(EngagementModelSchema).optional(),
     minimum_project_size_band: MinimumProjectSizeBandSchema.optional(),

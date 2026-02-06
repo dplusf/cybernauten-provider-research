@@ -1,3 +1,4 @@
+import { readFile } from "fs/promises";
 import OpenAI from "openai";
 
 import { ALLOWED_SERVICES, AllowedService, isAllowedService } from "./services";
@@ -33,6 +34,42 @@ const SERVICE_KEYWORDS: Array<{ service: (typeof ALLOWED_SERVICES)[number]; term
   { service: "SOC / MDR", terms: ["soc", "mdr", "managed detection", "xdr"] },
   { service: "Vulnerability Management", terms: ["vulnerability management", "vuln management"] },
 ];
+
+const BSI_APT_RESPONSE_URL =
+  "https://www.bsi.bund.de/SharedDocs/Downloads/DE/BSI/Cyber-Sicherheit/Themen/Dienstleister_APT-Response-Liste.pdf?__blob=publicationFile&v=42";
+const BSI_APT_RESPONSE_LIST_PATH = "seeds/bsi-apt-response.txt";
+const BSI_APT_QUALIFICATION = "BSI Qualified APT Response";
+let bsiAptResponseSlugsPromise: Promise<Set<string>> | null = null;
+
+const loadBsiAptResponseSlugs = async (): Promise<Set<string>> => {
+  if (!bsiAptResponseSlugsPromise) {
+    bsiAptResponseSlugsPromise = readFile(BSI_APT_RESPONSE_LIST_PATH, "utf8")
+      .then((content) =>
+        content
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter((line) => line.length > 0 && !line.startsWith("#"))
+          .map((entry) => {
+            try {
+              return normalizeSlug(entry);
+            } catch {
+              return "";
+            }
+          })
+          .filter((entry) => entry.length > 0),
+      )
+      .then((slugs) => new Set(slugs))
+      .catch(() => new Set());
+  }
+  return bsiAptResponseSlugsPromise;
+};
+
+const isFullServiceList = (values: AllowedService[]): boolean => {
+  if (values.length !== ALLOWED_SERVICES.length) {
+    return false;
+  }
+  return ALLOWED_SERVICES.every((service) => values.includes(service));
+};
 
 const LANGUAGE_HINTS: Array<{ lang: "de" | "en"; terms: string[] }> = [
   { lang: "de", terms: ["kontakt", "impressum", "leistungen", "datenschutz", "über uns", "ueber uns"] },
@@ -124,6 +161,18 @@ const DESCRIPTION_BLACKLIST = [
   "öffentlich",
   "kaum beschrieben",
   "nicht ausreichend beschrieben",
+  "maßgeschneidert",
+  "maßgeschneiderte",
+  "tailored",
+  "tailor-made",
+  "best in class",
+  "cutting edge",
+  "state of the art",
+  "innovative",
+  "modernste",
+  "führend",
+  "leading",
+  "proaktiv",
 ];
 
 const DIFFERENTIATOR_BLACKLIST = [
@@ -207,9 +256,13 @@ const normalizeDescription = (text: string | undefined): DescriptionResult => {
   const trimmed = text.trim();
   const lower = trimmed.toLowerCase();
   const isBlocked = DESCRIPTION_BLACKLIST.some((phrase) => lower.includes(phrase));
+  const hasSecondPerson = /\b(du|dein|deine|deinen|deinem|you|your)\b/i.test(trimmed);
 
-  if (isBlocked) {
-    return { description: "", blockedReason: "Short description contains vague or disallowed phrasing." };
+  if (isBlocked || hasSecondPerson) {
+    return {
+      description: "",
+      blockedReason: "Short description contains marketing language or second-person phrasing.",
+    };
   }
 
   if (trimmed.length < 30) {
@@ -217,6 +270,36 @@ const normalizeDescription = (text: string | undefined): DescriptionResult => {
   }
 
   return { description: trimmed.slice(0, 200) };
+};
+
+const joinHumanList = (values: string[]): string => {
+  if (values.length <= 1) {
+    return values.join("");
+  }
+  if (values.length === 2) {
+    return `${values[0]} and ${values[1]}`;
+  }
+  return `${values.slice(0, -1).join(", ")}, and ${values[values.length - 1]}`;
+};
+
+const formatRegions = (regions: ProviderFrontmatter["regions"]): string => {
+  if (regions.includes("GLOBAL")) {
+    return "global";
+  }
+  return regions.slice(0, 3).join(", ");
+};
+
+const buildNeutralDescription = (input: {
+  name: string;
+  services: AllowedService[];
+  regions: ProviderFrontmatter["regions"];
+}): string => {
+  if (input.services.length === 0) {
+    return "";
+  }
+  const services = joinHumanList(input.services.slice(0, 3));
+  const regionLabel = input.regions.length > 0 ? ` in ${formatRegions(input.regions)}` : "";
+  return `${input.name} provides ${services} cybersecurity services${regionLabel}.`;
 };
 
 const normalizeDifferentiator = (text: string | undefined): DescriptionResult => {
@@ -359,6 +442,7 @@ const countNonDefaultFacts = (flags: {
   proofSourceUrlsCount: number;
   industriesCount: number;
   certificationsCount: number;
+  qualificationsCount: number;
   caseStudiesCount: number;
   engagementModelsCount: number;
 }): number => {
@@ -376,6 +460,7 @@ const countNonDefaultFacts = (flags: {
   if (flags.proofSourceUrlsCount > 0) count += 1;
   if (flags.industriesCount > 0) count += 1;
   if (flags.certificationsCount > 0) count += 1;
+  if (flags.qualificationsCount > 0) count += 1;
   if (flags.caseStudiesCount > 0) count += 1;
   if (flags.engagementModelsCount > 0) count += 1;
   return count;
@@ -385,6 +470,7 @@ const normalizeProvider = (
   candidate: PartialProvider,
   seedUrl: string,
   pages: CrawledPage[],
+  bsiAptResponseSlugs: Set<string>,
 ): { provider: ProviderFrontmatter; lowConfidence: boolean } => {
   const officialText = pages
     .filter((page) => page.discoveryReason !== "external-proof")
@@ -432,9 +518,13 @@ const normalizeProvider = (
     regionsDefaulted = true;
   }
 
-  const services = dedupe(
+  const candidateServices = dedupe(
     (candidate.services ?? []).filter((service) => isAllowedService(service)),
   );
+  if (isFullServiceList(candidateServices)) {
+    notes.push("Services list looked defaulted (all services); inferred from text.");
+  }
+  const services = isFullServiceList(candidateServices) ? [] : candidateServices;
   let servicesDefaulted = false;
   if (services.length === 0) {
     services.push(...inferServices(text));
@@ -509,6 +599,19 @@ const normalizeProvider = (
 
   const notableReferences = normalizeStringList(candidate.notable_references, 3);
   const proofSourceUrls = normalizeUrlList(candidate.proof_source_urls, 3);
+  const qualifications = normalizeStringList(candidate.qualifications, 5);
+  if (bsiAptResponseSlugs.has(candidateSlug)) {
+    if (!qualifications.includes(BSI_APT_QUALIFICATION)) {
+      qualifications.push(BSI_APT_QUALIFICATION);
+    }
+    if (!proofSourceUrls.includes(BSI_APT_RESPONSE_URL)) {
+      if (proofSourceUrls.length < 3) {
+        proofSourceUrls.push(BSI_APT_RESPONSE_URL);
+      } else {
+        notes.push("BSI proof URL omitted (limit reached).");
+      }
+    }
+  }
 
   const differentiatorResult = normalizeDifferentiator(candidate.differentiator);
   const differentiatorCandidate =
@@ -534,8 +637,19 @@ const normalizeProvider = (
   }
 
   const descriptionResult = normalizeDescription(candidate.short_description);
-  const description = descriptionResult.description;
-  if (descriptionResult.blockedReason) {
+  let description = descriptionResult.description;
+  if (!description) {
+    const neutral = buildNeutralDescription({ name, services, regions });
+    if (neutral) {
+      description = neutral;
+      if (descriptionResult.blockedReason) {
+        notes.push(`Short description replaced with neutral summary. ${descriptionResult.blockedReason}`);
+      } else {
+        notes.push("Short description replaced with neutral summary.");
+      }
+    }
+  }
+  if (!description && descriptionResult.blockedReason) {
     publishReasons.push(descriptionResult.blockedReason);
   }
 
@@ -553,6 +667,7 @@ const normalizeProvider = (
     proofSourceUrlsCount: proofSourceUrls.length,
     industriesCount: industries.length,
     certificationsCount: certifications.length,
+    qualificationsCount: qualifications.length,
     caseStudiesCount: caseStudies.length,
     engagementModelsCount: engagementModels.length,
   });
@@ -598,6 +713,7 @@ const normalizeProvider = (
     proof_source_urls: proofSourceUrls.length > 0 ? proofSourceUrls : undefined,
     industries: industries.length > 0 ? industries : undefined,
     certifications: certifications.length > 0 ? certifications : undefined,
+    qualifications: qualifications.length > 0 ? qualifications : undefined,
     case_studies: caseStudies.length > 0 ? caseStudies : undefined,
     engagement_models: engagementModels.length > 0 ? engagementModels : undefined,
     minimum_project_size_band: candidate.minimum_project_size_band,
@@ -627,6 +743,7 @@ export const extractProvider = async (seedUrl: string, pages: CrawledPage[]) => 
   });
 
   const seedSlug = normalizeSlug(seedUrl);
+  const bsiAptResponseSlugs = await loadBsiAptResponseSlugs();
   const officialPages = pages.filter((page) => page.discoveryReason !== "external-proof");
   const externalPages = pages.filter((page) => page.discoveryReason === "external-proof");
   const officialText = officialPages
@@ -646,23 +763,69 @@ export const extractProvider = async (seedUrl: string, pages: CrawledPage[]) => 
 
   const prompt = `You are a strict data extraction tool. Use ONLY the provided text.\n\nReturn JSON only with these fields:\n- schema_version (number)\n- name (string)\n- legal_name? (string, official legal entity name)\n- slug (kebab-case)\n- website (url)\n- regions (array of: DACH, DE, AT, CH, EU, GLOBAL)\n- services (array of: ${ALLOWED_SERVICES.join(", ")})\n- primary_services (subset of services, 1-3 items)\n- short_description (30-200 chars, or empty if no specific facts)\n- languages (array of: de, en)\n- delivery_modes (array of: remote, on_site, hybrid)\n- company_size_band (solo, 2-10, 11-50, 51-200, 200+)\n- response_time_band (<4h, <1d, 2-3d, 1w+, unknown)\n- lead_contact (object: {type: email|form|phone, value: string, notes?: string})\n- founded_year? (number, 4-digit year)\n- differentiator? (string, concrete and specific)\n- notable_references? (array of strings, 1-3 items)\n- proof_source_urls? (array of urls, 1-3 items)\n- industries? (array of strings)\n- certifications? (array of strings)\n- case_studies? (array of urls)\n- engagement_models? (array of: fixed_scope, retainer, project, emergency)\n- minimum_project_size_band? (<5k, 5-20k, 20-50k, 50k+)\n- availability? (yes, limited, no)\n- emergency_24_7? (boolean)\n- is_fictional? (boolean)\n- data_origin? (seed, provider_submitted, researched)\n- evidence_level? (none, basic, verified)\n- notes? (string, max 240 chars)\n\nRules:\n- Never invent certifications, services, response times, company size, or founded year.\n- Do not use vague filler phrases in short_description or differentiator; leave them empty if specifics are missing.\n- Use external sources ONLY for proof/facts (founded_year, proof_source_urls, notable_references).\n- Use official pages for short_description, differentiator, and legal_name.\n- Only include notable_references and proof_source_urls when explicitly stated.\n- Prefer empty/unknown over guessing for optional fields.\n- If a required field is missing, set a conservative value and mention uncertainty in notes.\n- Return JSON only.\n\nSeed slug: ${seedSlug}\n\nText:\n${sourceText}`;
 
+  const promptLines = [
+    "You are a strict data extraction tool. Use ONLY the provided text.",
+    "",
+    "Return JSON only with these fields:",
+    "- schema_version (number)",
+    "- name (string)",
+    "- legal_name? (string, official legal entity name)",
+    "- slug (kebab-case)",
+    "- website (url)",
+    "- regions (array of: DACH, DE, AT, CH, EU, GLOBAL)",
+    `- services (array of: ${ALLOWED_SERVICES.join(", ")})`,
+    "- primary_services (subset of services, 1-3 items)",
+    "- short_description (30-200 chars, neutral and customer-centered, no marketing language, no second-person phrasing)",
+    "- languages (array of: de, en)",
+    "- delivery_modes (array of: remote, on_site, hybrid)",
+    "- company_size_band (solo, 2-10, 11-50, 51-200, 200+)",
+    "- response_time_band (<4h, <1d, 2-3d, 1w+, unknown)",
+    "- lead_contact (object: {type: email|form|phone, value: string, notes?: string})",
+    "- founded_year? (number, 4-digit year)",
+    "- differentiator? (string, concrete and specific)",
+    "- notable_references? (array of strings, 1-3 items)",
+    "- proof_source_urls? (array of urls, 1-3 items)",
+    "- industries? (array of strings)",
+    "- certifications? (array of strings)",
+    "- case_studies? (array of urls)",
+    "- engagement_models? (array of: fixed_scope, retainer, project, emergency)",
+    "- minimum_project_size_band? (<5k, 5-20k, 20-50k, 50k+)",
+    "- availability? (yes, limited, no)",
+    "- emergency_24_7? (boolean)",
+    "- is_fictional? (boolean)",
+    "- data_origin? (seed, provider_submitted, researched)",
+    "- evidence_level? (none, basic, verified)",
+    "- qualifications? (array of strings)",
+    "- notes? (string, max 240 chars)",
+    "",
+    "Rules:",
+    "- Never invent certifications, services, response times, company size, or founded year.",
+    "- Do not use marketing language or second-person phrasing in short_description; leave it empty if specifics are missing.",
+    "- Use external sources ONLY for proof/facts (founded_year, proof_source_urls, notable_references).",
+    "- Use official pages for short_description, differentiator, and legal_name.",
+    "- Only include notable_references and proof_source_urls when explicitly stated.",
+    "- Prefer empty/unknown over guessing for optional fields.",
+    "- If a required field is missing, set a conservative default and add uncertainty to notes.",
+  ];
+  const promptOverride = `${promptLines.join("\n")}\n\n${sourceText}`;
+
   const response = await client.chat.completions.create({
     model,
     temperature: 0,
     response_format: { type: "json_object" },
     messages: [
       { role: "system", content: "You extract structured data from website text." },
-      { role: "user", content: prompt },
+      { role: "user", content: promptOverride },
     ],
   });
 
   const content = response.choices[0]?.message?.content ?? "{}";
   const candidate = parseJson(content);
-  const normalized = normalizeProvider(candidate, seedUrl, pages);
+  const normalized = normalizeProvider(candidate, seedUrl, pages, bsiAptResponseSlugs);
   const parsed = ProviderFrontmatterSchema.safeParse(normalized.provider);
 
   if (!parsed.success) {
-    const fallback = normalizeProvider({}, seedUrl, pages);
+    const fallback = normalizeProvider({}, seedUrl, pages, bsiAptResponseSlugs);
     return {
       provider: fallback.provider,
       lowConfidence: true,
