@@ -189,6 +189,16 @@ const SECURITY_KEYWORDS = [
   "security operations",
 ];
 
+const EMERGENCY_KEYWORDS = [
+  "24/7",
+  "24x7",
+  "24 x 7",
+  "notfall",
+  "emergency",
+  "incident response",
+  "hotline",
+];
+
 const normalizeDescription = (text: string | undefined): DescriptionResult => {
   if (!text) {
     return { description: "", blockedReason: "Missing short description." };
@@ -306,6 +316,11 @@ const extractDifferentiatorFromText = (text: string): string | undefined => {
 const hasSecurityKeyword = (value: string): boolean => {
   const lower = value.toLowerCase();
   return SECURITY_KEYWORDS.some((keyword) => lower.includes(keyword));
+};
+
+const inferEmergencyAvailability = (value: string): boolean => {
+  const lower = value.toLowerCase();
+  return EMERGENCY_KEYWORDS.some((keyword) => lower.includes(keyword));
 };
 
 const countRelevanceSignals = (input: {
@@ -512,6 +527,12 @@ const normalizeProvider = (
   const contactPage = pages.find((page) => page.key === "contact")?.url;
   const leadContact = normalizeLeadContact(candidate.lead_contact, seedUrl, contactPage, notes);
 
+  const emergency24x7 =
+    candidate.emergency_24_7 ?? (inferEmergencyAvailability(text) ? true : undefined);
+  if (candidate.emergency_24_7 === undefined && emergency24x7) {
+    notes.push("Emergency 24/7 inferred from site text.");
+  }
+
   const descriptionResult = normalizeDescription(candidate.short_description);
   const description = descriptionResult.description;
   if (descriptionResult.blockedReason) {
@@ -581,7 +602,7 @@ const normalizeProvider = (
     engagement_models: engagementModels.length > 0 ? engagementModels : undefined,
     minimum_project_size_band: candidate.minimum_project_size_band,
     availability: candidate.availability,
-    emergency_24_7: candidate.emergency_24_7 ?? false,
+    emergency_24_7: emergency24x7 ?? false,
     is_fictional: candidate.is_fictional ?? false,
     data_origin: "researched",
     evidence_level: lowConfidence ? "basic" : candidate.evidence_level ?? "basic",
