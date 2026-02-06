@@ -54,6 +54,7 @@ Notes:
 - Use semicolons consistently.
 - Use trailing commas where present in existing files.
 - Prefer one statement per line; no compacted chains.
+- Keep indentation at 2 spaces to match the current codebase.
 
 ### Naming
 
@@ -68,6 +69,7 @@ Notes:
 - Keep Zod schema definitions and TypeScript types in `src/schema.ts`.
 - Use `ProviderFrontmatterSchema.safeParse` for runtime validation.
 - Keep derived publish rules in normalization logic, not in the crawler.
+- TypeScript runs in `strict` mode; avoid `any` and prefer explicit narrowing.
 
 ### Error Handling
 
@@ -75,6 +77,7 @@ Notes:
 - Prefer explicit fallbacks with a `notes` explanation.
 - Avoid silent `catch` blocks; when needed, keep scope narrow.
 - Prefer returning empty/unknown values over invented data.
+- Use `console` logging for CLI status; keep logs human-readable.
 
 ## Data Integrity Rules
 
@@ -89,7 +92,7 @@ Notes:
 
 ## Crawling Rules
 
-- Crawl the curated paths and discovery targets (keyword-based) on the same origin.
+- Crawl the homepage, extract visible links, use sitemap.xml when available, and fall back to common paths if the homepage crawl fails.
 - Discovery is capped (12 internal pages) and excludes blocked extensions.
 - Trusted external sources (e.g. Wikipedia) are allowed only for proof/facts, not descriptions.
 - Extract visible text only; remove `nav`, `footer`, `script`, `style`, `noscript`, and hidden elements.
